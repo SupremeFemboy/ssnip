@@ -1,0 +1,22 @@
+[package]
+name = "ssnip"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+wayland-client = "0.31"
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+wayland-cursor = "0.31"
+memmap2 = "0.9"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+rustix = { version = "1.0", features = ["shm", "mm", "fs"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+notify-rust = { version = "4", default-features = false, features = ["z"] }
+wl-clipboard-rs = "0.9"
+toml_edit = "0.22"
+libwebp-sys = { version = "0.14", features = ["system-dylib"] }
+
+
