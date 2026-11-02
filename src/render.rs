@@ -315,48 +315,40 @@ pub fn encode_webp(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn save_screenshot(
+pub fn crop_to_image(
     original: &[u8],
     width: u32,
     height: u32,
     stride: u32,
     format: wl_shm::Format,
     y_invert: bool,
-    selection: Option<Rect>,
-    toplevel_patch: Option<(&image::RgbaImage, &[Rect])>,
-    format_options: &FormatOptions,
-    path: &Path,
-) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let rect = selection.unwrap_or(Rect {
-        x: 0,
-        y: 0,
-        width,
-        height,
-    });
-
-    let x_start = rect.x.min(width);
-    let y_start = rect.y.min(height);
-    let actual_width = rect.width.min(width - x_start);
-    let actual_height = rect.height.min(height - y_start);
-
-    if actual_width == 0 || actual_height == 0 {
-        return Err("Screenshot size is 0".into());
-    }
-
-    let mut img = image::RgbaImage::new(actual_width, actual_height);
+    x_start: u32,
+    y_start: u32,
+    crop_w: u32,
+    crop_h: u32,
+) -> image::RgbaImage {
+    let mut img = image::RgbaImage::new(crop_w, crop_h);
     let stride = stride as usize;
 
-    for ly in 0..actual_height {
+    for ly in 0..crop_h {
         let gy = if y_invert {
-            height - 1 - (y_start + ly)
+            height.saturating_sub(1 + y_start + ly)
         } else {
             y_start + ly
         };
 
+        if gy >= height {
+            continue;
+        }
+
         let row_offset = (gy as usize) * stride;
 
-        for lx in 0..actual_width {
+        for lx in 0..crop_w {
             let gx = x_start + lx;
+            if gx >= width {
+                continue;
+            }
+
             let px_offset = row_offset + (gx as usize) * 4;
 
             let (r, g, b) = match format {
@@ -378,14 +370,17 @@ pub fn save_screenshot(
         }
     }
 
-    if let Some((toplevel_img, overlap_rects)) = toplevel_patch
-        && !overlap_rects.is_empty() {
-            patch_overlapping_windows(&mut img, rect, overlap_rects, toplevel_img);
-        }
+    img
+}
 
+pub fn save_image(
+    img: &image::RgbaImage,
+    format_options: &FormatOptions,
+    path: &Path,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     match ImageFormatType::from_path(path) {
         ImageFormatType::Webp => {
-            let memory = encode_webp(&img, &format_options.webp)?;
+            let memory = encode_webp(img, &format_options.webp)?;
             std::fs::write(path, memory)?;
         }
         ImageFormatType::Jpeg => {
@@ -442,6 +437,56 @@ pub fn save_screenshot(
     }
 
     Ok(png_bytes)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn save_screenshot(
+    original: &[u8],
+    width: u32,
+    height: u32,
+    stride: u32,
+    format: wl_shm::Format,
+    y_invert: bool,
+    selection: Option<Rect>,
+    toplevel_patch: Option<(&image::RgbaImage, &[Rect])>,
+    format_options: &FormatOptions,
+    path: &Path,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let rect = selection.unwrap_or(Rect {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    });
+
+    let x_start = rect.x.min(width);
+    let y_start = rect.y.min(height);
+    let actual_width = rect.width.min(width - x_start);
+    let actual_height = rect.height.min(height - y_start);
+
+    if actual_width == 0 || actual_height == 0 {
+        return Err("Screenshot size is 0".into());
+    }
+
+    let mut img = crop_to_image(
+        original,
+        width,
+        height,
+        stride,
+        format,
+        y_invert,
+        x_start,
+        y_start,
+        actual_width,
+        actual_height,
+    );
+
+    if let Some((toplevel_img, overlap_rects)) = toplevel_patch
+        && !overlap_rects.is_empty() {
+            patch_overlapping_windows(&mut img, rect, overlap_rects, toplevel_img);
+        }
+
+    save_image(&img, format_options, path)
 }
 
 #[cfg(test)]

@@ -27,6 +27,8 @@ use wayland_protocols_wlr::{
 pub struct OutputData {
     pub output: wl_output::WlOutput,
     pub name: String,
+    pub x: i32,
+    pub y: i32,
     pub scale: i32,
     pub screencopy_frame: Option<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1>,
     pub captured_frame: Option<CapturedFrameData>,
@@ -149,6 +151,8 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                     state.outputs.push(OutputData {
                         output,
                         name: format!("Output-{}", output_idx),
+                        x: 0,
+                        y: 0,
                         scale: 1,
                         screencopy_frame: None,
                         captured_frame: None,
@@ -183,6 +187,10 @@ impl Dispatch<wl_output::WlOutput, usize> for AppState {
     ) {
         if let Some(output) = state.outputs.get_mut(output_idx) {
             match event {
+                wl_output::Event::Geometry { x, y, .. } => {
+                    output.x = x;
+                    output.y = y;
+                }
                 wl_output::Event::Scale { factor } => {
                     output.scale = factor;
                 }
@@ -795,33 +803,52 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let output = &state.outputs[active_idx];
         let cap = output.captured_frame.as_ref().unwrap();
         let target_path = state.config.resolve_save_path()?;
-
-        let mut toplevel_img = None;
-        let mut overlaps = Vec::new();
-
-        if let Some(ref win) = state.selected_window {
-            overlaps = window::get_overlapping_windows(win, &output.windows);
-            if !overlaps.is_empty()
-                && let Some(ref stable_id) = win.stable_id {
-                    toplevel_img = window::capture_toplevel_to_memory(stable_id, state.config.capture_cursor());
-                }
-        }
-
-        let toplevel_patch = toplevel_img.as_ref().map(|img| (img, overlaps.as_slice()));
         let format_options = state.config.format_options();
 
-        let png_bytes = render::save_screenshot(
-            cap.shm_buffer.as_slice(),
-            cap.width,
-            cap.height,
-            cap.stride,
-            cap.format,
-            cap.y_invert,
-            state.selection,
-            toplevel_patch,
-            &format_options,
-            &target_path,
-        )?;
+        let is_full_screen = state.selected_window.is_none()
+            && state.selection.is_none_or(|r| {
+                r.x == 0 && r.y == 0 && r.width >= cap.width && r.height >= cap.height
+            });
+
+        let mut live_image: Option<image::RgbaImage> = None;
+
+        if !is_full_screen {
+            if let Some(ref win) = state.selected_window {
+                live_image = window::capture_window_live(
+                    win,
+                    output.x,
+                    output.y,
+                    output.scale,
+                    state.config.capture_cursor(),
+                    cap,
+                );
+            } else if let Some(rect) = state.selection {
+                live_image = window::capture_region_live(
+                    rect,
+                    output.x,
+                    output.y,
+                    output.scale,
+                    state.config.capture_cursor(),
+                );
+            }
+        }
+
+        let png_bytes = if let Some(ref img) = live_image {
+            render::save_image(img, &format_options, &target_path)?
+        } else {
+            render::save_screenshot(
+                cap.shm_buffer.as_slice(),
+                cap.width,
+                cap.height,
+                cap.stride,
+                cap.format,
+                cap.y_invert,
+                state.selection,
+                None,
+                &format_options,
+                &target_path,
+            )?
+        };
 
         if state.config.copy_to_clipboard() {
             clipboard::copy_png_to_clipboard(&png_bytes, &target_path);

@@ -270,6 +270,7 @@ pub fn get_windows_for_monitor(monitor_name: &str, scale: i32) -> Vec<WindowInfo
     Vec::new()
 }
 
+#[allow(dead_code)]
 pub fn get_overlapping_windows(target: &WindowInfo, all_windows: &[WindowInfo]) -> Vec<Rect> {
     let mut overlaps = Vec::new();
 
@@ -296,6 +297,101 @@ pub fn capture_toplevel_to_memory(
 ) -> Option<image::RgbaImage> {
     let mut cmd = Command::new("grim");
     cmd.arg("-T").arg(identifier);
+
+    if capture_cursor {
+        cmd.arg("-c");
+    }
+
+    cmd.arg("-t").arg("png").arg("-");
+
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let dyn_img = image::load_from_memory(&output.stdout).ok()?;
+    Some(dyn_img.to_rgba8())
+}
+
+/// Captures a selected window live from the compositor.
+/// If the window has translucent pixels (e.g. transparent terminal),
+/// it is blended over the desktop background from `cap` so the real background shows through.
+pub fn capture_window_live(
+    win: &WindowInfo,
+    output_x: i32,
+    output_y: i32,
+    scale: i32,
+    capture_cursor: bool,
+    cap: &crate::CapturedFrameData,
+) -> Option<image::RgbaImage> {
+    if let Some(ref stable_id) = win.stable_id
+        && let Some(top_img) = capture_toplevel_to_memory(stable_id, capture_cursor)
+    {
+        let has_transparency = top_img.pixels().any(|p| p[3] < 255);
+        if has_transparency {
+            let mut composite = crate::render::crop_to_image(
+                cap.shm_buffer.as_slice(),
+                cap.width,
+                cap.height,
+                cap.stride,
+                cap.format,
+                cap.y_invert,
+                win.rect.x,
+                win.rect.y,
+                top_img.width(),
+                top_img.height(),
+            );
+
+            for py in 0..top_img.height() {
+                for px in 0..top_img.width() {
+                    let top_px = top_img.get_pixel(px, py);
+                    if top_px[3] == 255 {
+                        composite.put_pixel(px, py, *top_px);
+                    } else if top_px[3] > 0 {
+                        let bg_px = composite.get_pixel(px, py);
+                        let a = top_px[3] as u32;
+                        let inv_a = 255 - a;
+                        let r = ((top_px[0] as u32 * a + bg_px[0] as u32 * inv_a) / 255) as u8;
+                        let g = ((top_px[1] as u32 * a + bg_px[1] as u32 * inv_a) / 255) as u8;
+                        let b = ((top_px[2] as u32 * a + bg_px[2] as u32 * inv_a) / 255) as u8;
+                        composite.put_pixel(px, py, image::Rgba([r, g, b, 255]));
+                    }
+                }
+            }
+            return Some(composite);
+        } else {
+            return Some(top_img);
+        }
+    }
+
+    capture_region_live(win.rect, output_x, output_y, scale, capture_cursor)
+}
+
+/// Captures a region live from the display via grim after the overlay has been closed.
+pub fn capture_region_live(
+    rect: Rect,
+    output_x: i32,
+    output_y: i32,
+    scale: i32,
+    capture_cursor: bool,
+) -> Option<image::RgbaImage> {
+    let scale_f = scale.max(1) as f64;
+    let geom_x = output_x as f64 + (rect.x as f64 / scale_f);
+    let geom_y = output_y as f64 + (rect.y as f64 / scale_f);
+    let geom_w = rect.width as f64 / scale_f;
+    let geom_h = rect.height as f64 / scale_f;
+
+    let geom_str = format!(
+        "{},{} {}x{}",
+        geom_x.round() as i32,
+        geom_y.round() as i32,
+        geom_w.round().max(1.0) as u32,
+        geom_h.round().max(1.0) as u32
+    );
+
+    let mut cmd = Command::new("grim");
+    cmd.arg("-g").arg(geom_str);
+    cmd.arg("-s").arg(scale.max(1).to_string());
 
     if capture_cursor {
         cmd.arg("-c");
