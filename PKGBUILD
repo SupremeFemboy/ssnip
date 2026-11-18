@@ -1,6 +1,6 @@
 # Maintainer: Supreme Femboy
 pkgname=ssnip
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Fast and minimalistic Wayland screenshot utility written in Rust"
 arch=('x86_64')
@@ -30,7 +30,7 @@ pkgver() {
             printf "r%s.g%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
         fi
     else
-        echo "0.1.0"
+        echo "0.2.0"
     fi
 }
 
