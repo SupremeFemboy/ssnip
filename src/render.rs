@@ -183,6 +183,9 @@ pub fn render_overlay(
                     let start_byte = row_offset + (inner_start_x as usize) * 4;
                     let end_byte = row_offset + (inner_end_x as usize) * 4;
                     dest[start_byte..end_byte].copy_from_slice(&original[start_byte..end_byte]);
+                    for px in dest[start_byte..end_byte].as_chunks_mut::<4>().0 {
+                        px[3] = 255;
+                    }
                 }
             }
 
@@ -577,7 +580,7 @@ mod tests {
         let stride = width * 4;
         let mut original = vec![0u8; (height * stride) as usize];
 
-        for chunk in original.chunks_exact_mut(4) {
+        for chunk in original.as_chunks_mut::<4>().0 {
             chunk[0] = 255;
             chunk[1] = 0;
             chunk[2] = 0;
@@ -635,7 +638,7 @@ mod tests {
         let stride = width * 4;
         let mut original = vec![0u8; (height * stride) as usize];
 
-        for chunk in original.chunks_exact_mut(4) {
+        for chunk in original.as_chunks_mut::<4>().0 {
             chunk[0] = 255;
             chunk[1] = 128;
             chunk[2] = 64;
@@ -672,7 +675,7 @@ mod tests {
         let stride = width * 4;
         let mut original = vec![0u8; (height * stride) as usize];
 
-        for chunk in original.chunks_exact_mut(4) {
+        for chunk in original.as_chunks_mut::<4>().0 {
             chunk[0] = 255;
             chunk[1] = 128;
             chunk[2] = 64;

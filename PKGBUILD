@@ -9,12 +9,17 @@ license=('MIT' 'Apache-2.0')
 depends=('gcc-libs' 'glibc' 'wayland' 'libwebp')
 makedepends=('cargo')
 optdepends=(
-    'grim: Isolated window captures excluding overlapping floating windows'
     'wl-clipboard: Native Wayland clipboard utility'
 )
 options=(!debug)
 source=()
 sha256sums=()
+
+# Keep makepkg's srcdir/pkgdir under target/makepkg so running makepkg from the
+# repository root never deletes or overwrites the Rust src/ directory.
+if [[ -n "${startdir:-}" && ( -z "${BUILDDIR:-}" || "$BUILDDIR" -ef "$startdir" ) ]]; then
+    BUILDDIR="$startdir/target/makepkg"
+fi
 
 pkgver() {
     cd "$startdir"

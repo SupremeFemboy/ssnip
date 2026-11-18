@@ -1,3 +1,4 @@
+mod capture;
 mod clipboard;
 mod color;
 mod config;
@@ -13,8 +14,8 @@ use shm::ShmBuffer;
 
 use wayland_client::{
     protocol::{
-        wl_buffer, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry, wl_seat,
-        wl_shm, wl_shm_pool, wl_surface,
+        wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_registry,
+        wl_seat, wl_shm, wl_shm_pool, wl_surface,
     },
     Connection, Dispatch, QueueHandle, WEnum,
 };
@@ -27,8 +28,6 @@ use wayland_protocols_wlr::{
 pub struct OutputData {
     pub output: wl_output::WlOutput,
     pub name: String,
-    pub x: i32,
-    pub y: i32,
     pub scale: i32,
     pub screencopy_frame: Option<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1>,
     pub captured_frame: Option<CapturedFrameData>,
@@ -78,6 +77,7 @@ pub struct AppState {
 
     pub exit: bool,
     pub should_save: bool,
+    pub clear_frame_done: bool,
 }
 
 impl AppState {
@@ -151,8 +151,6 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                     state.outputs.push(OutputData {
                         output,
                         name: format!("Output-{}", output_idx),
-                        x: 0,
-                        y: 0,
                         scale: 1,
                         screencopy_frame: None,
                         captured_frame: None,
@@ -187,10 +185,6 @@ impl Dispatch<wl_output::WlOutput, usize> for AppState {
     ) {
         if let Some(output) = state.outputs.get_mut(output_idx) {
             match event {
-                wl_output::Event::Geometry { x, y, .. } => {
-                    output.x = x;
-                    output.y = y;
-                }
                 wl_output::Event::Scale { factor } => {
                     output.scale = factor;
                 }
@@ -302,9 +296,15 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, usize> for AppState {
 
                 if output.overlay_buffers.is_none() {
                     let cap = output.captured_frame.as_ref().expect("captured frame missing");
-                    let buf0 = ShmBuffer::new(&shm, cap.width, cap.height, cap.stride, cap.format, qh)
+                    let overlay_fmt = match cap.format {
+                        wl_shm::Format::Xbgr8888 | wl_shm::Format::Abgr8888 => {
+                            wl_shm::Format::Abgr8888
+                        }
+                        _ => wl_shm::Format::Argb8888,
+                    };
+                    let buf0 = ShmBuffer::new(&shm, cap.width, cap.height, cap.stride, overlay_fmt, qh)
                         .expect("Failed to create overlay buffer 0");
-                    let buf1 = ShmBuffer::new(&shm, cap.width, cap.height, cap.stride, cap.format, qh)
+                    let buf1 = ShmBuffer::new(&shm, cap.width, cap.height, cap.stride, overlay_fmt, qh)
                         .expect("Failed to create overlay buffer 1");
                     output.overlay_buffers = Some([buf0, buf1]);
                     output.active_buffer_idx = 0;
@@ -369,8 +369,8 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                         let px = (surface_x * scale).round() as u32;
                         let py = (surface_y * scale).round() as u32;
 
-                        let hovered_win = out.windows.iter().rev().find(|w| w.rect.contains(px, py));
-                        let target = hovered_win.map(|w| w.rect).or_else(|| {
+                        let hovered_win = out.windows.iter().rev().find(|w| w.rect.contains(px, py)).cloned();
+                        let target = hovered_win.as_ref().map(|w| w.rect).or_else(|| {
                             out.captured_frame.as_ref().map(|cap| Rect {
                                 x: 0,
                                 y: 0,
@@ -379,6 +379,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                             })
                         });
 
+                        state.selected_window = hovered_win;
                         if state.selection != target {
                             state.selection = target;
                             state.redraw_output(idx);
@@ -415,8 +416,8 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                         let px = (surface_x * scale).round() as u32;
                         let py = (surface_y * scale).round() as u32;
 
-                        let hovered_win = out.windows.iter().rev().find(|w| w.rect.contains(px, py));
-                        let target = hovered_win.map(|w| w.rect).or_else(|| {
+                        let hovered_win = out.windows.iter().rev().find(|w| w.rect.contains(px, py)).cloned();
+                        let target = hovered_win.as_ref().map(|w| w.rect).or_else(|| {
                             out.captured_frame.as_ref().map(|cap| Rect {
                                 x: 0,
                                 y: 0,
@@ -425,6 +426,7 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
                             })
                         });
 
+                        state.selected_window = hovered_win;
                         if state.selection != target {
                             state.selection = target;
                             state.redraw_output(idx);
@@ -519,6 +521,21 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for AppState {
                     state.exit = true;
                 }
             }
+    }
+}
+
+impl Dispatch<wl_callback::WlCallback, ()> for AppState {
+    fn event(
+        state: &mut Self,
+        _: &wl_callback::WlCallback,
+        event: wl_callback::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let wl_callback::Event::Done { .. } = event {
+            state.clear_frame_done = true;
+        }
     }
 }
 
@@ -670,6 +687,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         selected_window: None,
         exit: false,
         should_save: false,
+        clear_frame_done: false,
     };
 
     // 1. Initial roundtrip to discover globals
@@ -786,6 +804,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         event_queue.blocking_dispatch(&mut state)?;
     }
 
+    let active_idx = state.active_output_idx.unwrap_or(0);
+    let is_full_screen = state.selected_window.is_none()
+        && state
+            .outputs
+            .get(active_idx)
+            .and_then(|o| o.captured_frame.as_ref())
+            .is_some_and(|cap| {
+                state.selection.is_none_or(|r| {
+                    r.x == 0 && r.y == 0 && r.width >= cap.width && r.height >= cap.height
+                })
+            });
+
+    // When taking a live capture (window or dragged region), replace the overlay with a
+    // 100% transparent frame and wait for one compositor frame callback before destroying
+    // the layer surface. This prevents compositor fade-out animations (e.g. Hyprland layersOut)
+    // from bleeding the dim overlay or selection border into the live screenshot.
+    if state.should_save && !is_full_screen {
+        let mut waiting_for_frame = false;
+        for (idx, out) in state.outputs.iter_mut().enumerate() {
+            if !out.configured {
+                continue;
+            }
+            if let (Some(buffers), Some(surface), Some(cap)) = (
+                &mut out.overlay_buffers,
+                &out.surface,
+                &out.captured_frame,
+            ) {
+                out.active_buffer_idx = 1 - out.active_buffer_idx;
+                let clear_buf = &mut buffers[out.active_buffer_idx];
+                clear_buf.as_slice_mut().fill(0);
+                if idx == active_idx {
+                    state.clear_frame_done = false;
+                    let _cb = surface.frame(&qh, ());
+                    waiting_for_frame = true;
+                }
+                surface.attach(Some(&clear_buf.buffer), 0, 0);
+                surface.damage_buffer(0, 0, cap.width as i32, cap.height as i32);
+                surface.commit();
+            }
+        }
+        if waiting_for_frame {
+            while !state.clear_frame_done {
+                if event_queue.blocking_dispatch(&mut state).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
     // Immediately destroy all overlay surfaces so the screen unfreezes instantly
     for out in &mut state.outputs {
         if let Some(layer_surface) = out.layer_surface.take() {
@@ -795,20 +862,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             surface.destroy();
         }
     }
-    let _ = conn.flush();
+    // Wait for compositor to process overlay destruction before performing any live capture
+    let _ = event_queue.roundtrip(&mut state);
 
     // 8. Save or cancel
     if state.should_save {
-        let active_idx = state.active_output_idx.unwrap_or(0);
         let output = &state.outputs[active_idx];
         let cap = output.captured_frame.as_ref().unwrap();
         let target_path = state.config.resolve_save_path()?;
         let format_options = state.config.format_options();
-
-        let is_full_screen = state.selected_window.is_none()
-            && state.selection.is_none_or(|r| {
-                r.x == 0 && r.y == 0 && r.width >= cap.width && r.height >= cap.height
-            });
 
         let mut live_image: Option<image::RgbaImage> = None;
 
@@ -816,17 +878,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(ref win) = state.selected_window {
                 live_image = window::capture_window_live(
                     win,
-                    output.x,
-                    output.y,
+                    &output.name,
                     output.scale,
                     state.config.capture_cursor(),
+                    &output.windows,
                     cap,
                 );
             } else if let Some(rect) = state.selection {
-                live_image = window::capture_region_live(
+                live_image = capture::capture_region_live(
+                    &output.name,
                     rect,
-                    output.x,
-                    output.y,
                     output.scale,
                     state.config.capture_cursor(),
                 );

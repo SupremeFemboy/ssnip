@@ -32,9 +32,10 @@ The output encoding format is automatically determined by the file extension (`.
 ```
 src/
 ├── main.rs          # layer-shell event loop, pointer & keyboard dispatch, surface lifecycle
+├── capture.rs       # native Wayland live capture (ext_image_copy_capture_v1 & zwlr_screencopy_v1)
 ├── config.rs        # TOML config loader, format options, format-preserving migration
 ├── render.rs        # frame rendering, dimming, border math, multi-format encoders
-├── window.rs        # Hyprland & Sway window discovery, overlap detection, toplevel capture
+├── window.rs        # Hyprland & Sway window discovery, overlap detection, translucent compositing
 ├── clipboard.rs     # native Wayland clipboard daemon integration (image/png)
 ├── notification.rs  # native D-Bus desktop notifications (org.freedesktop.Notifications)
 ├── color.rs         # universal color parser (hex, rgb, rgba, arrays) and alpha blending
@@ -43,7 +44,7 @@ src/
 ```
 
 1. **Capture & Precomputation:** When launched, `ssnip` captures the monitor via `zwlr_screencopy_v1` into `memmap2::MmapMut`. The dimmed framebuffer is precomputed once, enabling fluid, zero-copy double-buffered overlay updates during mouse drags.
-2. **Selective Patching:** When an occluded window is selected, `grim -T` acquires the window's isolated surface. `ssnip` calculates exact geometric intersections with foreground floating windows and patches only the obscured rectangles, preserving native blur, shadows, and desktop backgrounds elsewhere.
+2. **Native Live Capture & Overlap Isolation:** Clicking a window captures its isolated toplevel surface live via native Wayland `ext_foreign_toplevel_list_v1` + `ext_image_copy_capture_v1` (with zero external `grim` dependency). For translucent windows overlapped by floating windows, `ssnip` eliminates overlapping windows and their drop shadows while harmonically reconstructing the blurred desktop background from un-occluded areas. Dragged regions are captured live via `zwlr_screencopy_v1::capture_output_region` after clearing the overlay cleanly.
 3. **Optimized Encoders:** WebP lossless encoding utilizes multi-threading (`thread_level = 1`) and balanced effort presets (`method = 1`), preventing CPU hangs on high-resolution displays.
 
 ### Configuration
@@ -183,7 +184,7 @@ The package installs the binary to `/usr/bin/ssnip`. Runtime dependencies are `g
 ### Notes & limitations
 
 - Requires a Wayland compositor implementing `zwlr_layer_shell_v1` and `zwlr_screencopy_v1` (e.g. Hyprland, Sway, River, Wayfire, Labwc). Does not run on X11 or GNOME/Mutter (which intentionally omit layer-shell support).
-- Isolated window capture requires `grim` and window-management IPC (Hyprland UNIX socket or Sway IPC). If unavailable, standard rectangular screencopy is seamlessly used as fallback.
+- Isolated live window capture uses native Wayland protocols (`ext_foreign_toplevel_list_v1`, `ext_foreign_toplevel_image_capture_source_manager_v1`, `ext_image_copy_capture_v1`) and window-management IPC (Hyprland UNIX socket or Sway IPC) with no external `grim` dependency. If unavailable, native live `zwlr_screencopy_v1` region capture is used as fallback.
 - Wayland clipboard data is offered as standard `image/png` for universal compatibility across desktop applications (browsers, messengers, image editors).
 
 ---
@@ -216,9 +217,10 @@ The package installs the binary to `/usr/bin/ssnip`. Runtime dependencies are `g
 ```
 src/
 ├── main.rs          # цикл событий layer-shell, обработка указателя и клавиатуры, жизненный цикл поверхностей
+├── capture.rs       # нативный живой Wayland-захват (ext_image_copy_capture_v1 и zwlr_screencopy_v1)
 ├── config.rs        # загрузка конфигурации TOML, параметры форматов, формат-сохраняющая миграция
 ├── render.rs        # отрисовка кадра, затемнение, расчет границ, энкодеры форматов
-├── window.rs        # поиск окон в Hyprland и Sway, расчет перекрытий, toplevel-захват
+├── window.rs        # поиск окон в Hyprland и Sway, расчет перекрытий, композитинг полупрозрачных окон
 ├── clipboard.rs     # интеграция с демоном буфера обмена Wayland (image/png)
 ├── notification.rs  # нативные уведомления D-Bus (org.freedesktop.Notifications)
 ├── color.rs         # универсальный парсер цвета (hex, rgb, rgba, массивы) и альфа-блендинг
@@ -227,7 +229,7 @@ src/
 ```
 
 1. **Захват и предварительный расчет:** При запуске `ssnip` захватывает кадр экрана через `zwlr_screencopy_v1` в память `memmap2::MmapMut`. Затемненное изображение рассчитывается один раз, что обеспечивает плавную отрисовку рамки с двойной буферизацией без задержек.
-2. **Бесшовная вставка поверхностей:** Если окно перекрыто другими окнами, утилита запрашивает чистую поверхность окна через `grim -T`, вычисляет точные области пересечения с перекрывающими окнами и замещает только эти зоны, оставляя фоновые обои и прозрачность нетронутыми.
+2. **Нативный живой захват и изоляция перекрытий:** При клике по окну его изолированная поверхность захватывается на живую через нативные протоколы Wayland (`ext_foreign_toplevel_list_v1` + `ext_image_copy_capture_v1`) без зависимости от `grim`. Для полупрозрачных окон, перекрытых плавающими окнами, `ssnip` полностью удаляет перекрывающие окна вместе с их тенями и плавно восстанавливает реальный размытый фон рабочего стола. Произвольные выделенные области захватываются на живую через `zwlr_screencopy_v1::capture_output_region` после чистого скрытия оверлея.
 3. **Оптимизированное сжатие:** В WebP lossless по умолчанию задействовано многопоточное кодирование (`thread_level = 1`) и сбалансированный профиль скорости (`method = 1`), что устраняет многосекундные зависания на экранах высокого разрешения.
 
 ### Конфигурация
@@ -367,5 +369,5 @@ makepkg -si
 ### Примечания и ограничения
 
 - Требуется композитор Wayland с поддержкой протоколов `zwlr_layer_shell_v1` и `zwlr_screencopy_v1` (Hyprland, Sway, River, Wayfire, Labwc). Не поддерживается в X11 и GNOME/Mutter.
-- Изолированный захват окон без перекрытий использует `grim` и сокеты управления окнами (Hyprland UNIX socket или Sway IPC). При их отсутствии автоматически используется прямоугольный вырез из общего кадра экрана.
+- Изолированный живой захват окон без перекрытий работает нативно через Wayland-протоколы (`ext_foreign_toplevel_list_v1`, `ext_foreign_toplevel_image_capture_source_manager_v1`, `ext_image_copy_capture_v1`) и сокеты управления окнами (Hyprland UNIX socket или Sway IPC) без внешней зависимости от `grim`. При их отсутствии автоматически используется нативный живой захват области через `zwlr_screencopy_v1`.
 - В буфер обмена изображение копируется как стандартный `image/png` для совместимости со всеми приложениями (Telegram, Discord, браузеры, графические редакторы).
