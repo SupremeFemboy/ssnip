@@ -809,53 +809,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let active_idx = state.active_output_idx.unwrap_or(0);
-    let is_full_screen = state.selected_window.is_none()
-        && state
-            .outputs
-            .get(active_idx)
-            .and_then(|o| o.captured_frame.as_ref())
-            .is_some_and(|cap| {
-                state.selection.is_none_or(|r| {
-                    r.x == 0 && r.y == 0 && r.width >= cap.width && r.height >= cap.height
-                })
-            });
-
-    // When taking a live capture (window or dragged region), replace the overlay with a
-    // 100% transparent frame and wait for one compositor frame callback before destroying
-    // the layer surface. This prevents compositor fade-out animations (e.g. Hyprland layersOut)
-    // from bleeding the dim overlay or selection border into the live screenshot.
-    if state.should_save && !is_full_screen {
-        let mut waiting_for_frame = false;
-        for (idx, out) in state.outputs.iter_mut().enumerate() {
-            if !out.configured {
-                continue;
-            }
-            if let (Some(buffers), Some(surface), Some(cap)) = (
-                &mut out.overlay_buffers,
-                &out.surface,
-                &out.captured_frame,
-            ) {
-                out.active_buffer_idx = 1 - out.active_buffer_idx;
-                let clear_buf = &mut buffers[out.active_buffer_idx];
-                clear_buf.as_slice_mut().fill(0);
-                if idx == active_idx {
-                    state.clear_frame_done = false;
-                    let _cb = surface.frame(&qh, ());
-                    waiting_for_frame = true;
-                }
-                surface.attach(Some(&clear_buf.buffer), 0, 0);
-                surface.damage_buffer(0, 0, cap.width as i32, cap.height as i32);
-                surface.commit();
-            }
-        }
-        if waiting_for_frame {
-            while !state.clear_frame_done {
-                if event_queue.blocking_dispatch(&mut state).is_err() {
-                    break;
-                }
-            }
-        }
-    }
 
     // Immediately destroy all overlay surfaces so the screen unfreezes instantly
     for out in &mut state.outputs {
@@ -866,8 +819,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             surface.destroy();
         }
     }
-    // Wait for compositor to process overlay destruction before performing any live capture
-    let _ = event_queue.roundtrip(&mut state);
+    let _ = conn.flush();
 
     // 8. Save or cancel
     if state.should_save {
@@ -876,44 +828,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let target_path = state.config.resolve_save_path()?;
         let format_options = state.config.format_options();
 
-        let mut live_image: Option<image::RgbaImage> = None;
-
-        if !is_full_screen {
-            if let Some(ref win) = state.selected_window {
-                live_image = window::capture_window_live(
-                    win,
-                    &output.name,
-                    output.scale,
-                    state.config.capture_cursor(),
-                    &output.windows,
-                    cap,
-                );
-            } else if let Some(rect) = state.selection {
-                live_image = capture::capture_region_live(
-                    &output.name,
-                    rect,
-                    output.scale,
-                    state.config.capture_cursor(),
-                );
-            }
-        }
-
-        let png_bytes = if let Some(ref img) = live_image {
-            render::save_image(img, &format_options, &target_path)?
-        } else {
-            render::save_screenshot(
-                cap.shm_buffer.as_slice(),
-                cap.width,
-                cap.height,
-                cap.stride,
-                cap.format,
-                cap.y_invert,
-                state.selection,
-                None,
-                &format_options,
-                &target_path,
-            )?
-        };
+        let png_bytes = render::save_screenshot(
+            cap.shm_buffer.as_slice(),
+            cap.width,
+            cap.height,
+            cap.stride,
+            cap.format,
+            cap.y_invert,
+            state.selection,
+            None,
+            &format_options,
+            &target_path,
+        )?;
 
         if state.config.copy_to_clipboard() {
             clipboard::copy_png_to_clipboard(&png_bytes, &target_path);

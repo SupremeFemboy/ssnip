@@ -597,6 +597,7 @@ pub fn composite_window_capture(
 
 /// Captures a selected window live via native Wayland protocols (`ext_image_copy_capture_v1`
 /// for isolated toplevels + `zwlr_screencopy_manager_v1` for live desktop background when needed).
+#[allow(dead_code)]
 pub fn capture_window_live(
     win: &WindowInfo,
     output_name: &str,
