@@ -340,6 +340,10 @@ impl Dispatch<wl_pointer::WlPointer, ()> for AppState {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
+        if state.exit && !state.should_save {
+            return;
+        }
+
         match event {
             wl_pointer::Event::Enter { serial, surface, surface_x, surface_y } => {
                 for (idx, out) in state.outputs.iter().enumerate() {
