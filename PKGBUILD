@@ -1,6 +1,6 @@
 # Maintainer: Supreme Femboy
 pkgname=ssnip
-pkgver=0.2.0
+pkgver=afa3982
 pkgrel=1
 pkgdesc="Fast and minimalistic Wayland screenshot utility written in Rust"
 arch=('x86_64')
